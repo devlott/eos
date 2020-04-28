@@ -1,13 +1,9 @@
 #include <boost/convert.hpp>
-#include <boost/iostreams/device/back_inserter.hpp>
-#include <boost/iostreams/filter/zlib.hpp>
-#include <boost/iostreams/filtering_streambuf.hpp>
 #include <eosio/state_history/compression.hpp>
 #include <eosio/state_history/serialization.hpp>
 #include <eosio/state_history/trace_converter.hpp>
 extern const char* state_history_plugin_abi;
 
-namespace bio = boost::iostreams;
 namespace eosio {
 namespace state_history {
 
@@ -39,29 +35,6 @@ void trace_converter::add_transaction(const transaction_trace_ptr& trace, const 
 }
 
 namespace {
-
-template <typename Object>
-Object unpack_zlib_compressed(const char* buffer, fc::datastream<const char*>& ds) {
-   fc::unsigned_int len;
-   fc::raw::unpack(ds, len);
-
-   if (len.value == 0)
-      return Object{};
-
-   EOS_ASSERT(ds.remaining() >= static_cast<size_t>(len), fc::out_of_range_exception, "read datastream over by ${v}",
-              ("v", ds.remaining() - len));
-
-   bytes                     decompressed;
-   bio::filtering_ostreambuf strm(bio::zlib_decompressor() | bio::back_inserter(decompressed));
-   bio::write(strm, buffer + ds.tellp(), len);
-   bio::close(strm);
-   ds.skip(len);
-
-   fc::datastream<const char*> decompressed_ds(decompressed.data(), decompressed.size());
-   Object                      obj;
-   fc::raw::unpack(decompressed_ds, obj);
-   return obj;
-}
 
 std::vector<augmented_transaction_trace> prepare_traces(trace_converter&       converter,
                                                         const block_state_ptr& block_state) {
@@ -118,37 +91,15 @@ prunable_data_type prune(const prunable_data_type& obj) {
 
 BOOST_DECLARE_HAS_MEMBER(has_context_free_segments, context_free_segments);
 
-template <typename T, std::enable_if_t<!has_context_free_segments<T>::value, int> = 0>
-void pack(bytes& buffer, const T& obj) {
-   fc::datastream<size_t> ss;
-   fc::raw::pack(ss, obj);
-   const auto len = ss.tellp();
-   const auto pos = buffer.size();
-   buffer.resize(pos + len);
-   fc::datastream<char*> ds(buffer.data() + pos, len);
-   fc::raw::pack(ds, obj);
-}
-
-template <typename T, std::enable_if_t<!has_context_free_segments<T>::value, int> = 0>
-void pack(fc::datastream<char*>& ds, const T& obj) {
-   fc::raw::pack(ds, obj);
-}
-
-template <typename Buffer, typename T, std::enable_if_t<has_context_free_segments<T>::value, int> = 0>
-void pack(Buffer& buffer, const T& obj) {
-   const auto comopressed_context_free_segments =
-       obj.context_free_segments.size() ? zlib_compress_bytes(fc::raw::pack(obj.context_free_segments)) : bytes{};
-   pack(buffer, std::make_pair(std::ref(obj.signatures), std::ref(comopressed_context_free_segments)));
-}
-
-void pack(bytes& buffer, const prunable_data_type& obj) {
-   buffer.push_back(obj.prunable_data.which());
-   obj.prunable_data.visit([&buffer](const auto& obj) { pack(buffer, obj); });
-}
-
-void pack(fc::datastream<char*>& ds, const prunable_data_type& obj) {
-   fc::raw::pack(ds, static_cast<uint8_t>(obj.prunable_data.which()));
-   obj.prunable_data.visit([&ds](const auto& obj) { pack(ds, obj); });
+template <typename STREAM>
+void pack(STREAM& strm, const prunable_data_type& obj) {
+   fc::raw::pack(strm, static_cast<uint8_t>(obj.prunable_data.which()));
+   obj.prunable_data.visit(
+       eosio::chain::overloaded{[&strm](const prunable_data_type::none& data) { fc::raw::pack(strm, data); },
+                                [&strm](const auto& data) {
+                                   fc::raw::pack(strm, data.signatures);
+                                   zlib_pack(strm, data.context_free_segments);
+                                }});
 }
 
 template <typename T, std::enable_if_t<!has_context_free_segments<T>::value, int> = 0>
@@ -159,7 +110,7 @@ void unpack(const char*, fc::datastream<const char*>& ds, T& obj) {
 template <typename T, std::enable_if_t<has_context_free_segments<T>::value, int> = 0>
 void unpack(const char* read_buffer, fc::datastream<const char*>& ds, T& t) {
    fc::raw::unpack(ds, t.signatures);
-   t.context_free_segments = unpack_zlib_compressed<decltype(t.context_free_segments)>(read_buffer, ds);
+   zlib_unpack(read_buffer, ds, t.context_free_segments);
 }
 
 void unpack(const char* read_buffer, fc::datastream<const char*>& ds, prunable_data_type& prunable) {
@@ -192,7 +143,9 @@ struct restore_partial {
       ptrx.context_free_data = std::move(data.context_free_segments);
    }
    void operator()(prunable_data_type::none& data) const {}
-   void operator()(prunable_data_type::partial& data) const { EOS_ASSERT(false, state_history_exception, "Not implemented"); }
+   void operator()(prunable_data_type::partial& data) const {
+      EOS_ASSERT(false, state_history_exception, "Not implemented");
+   }
    void operator()(prunable_data_type::full& data) const {
       ptrx.signatures        = std::move(data.signatures);
       ptrx.context_free_data = std::move(data.context_free_segments);
@@ -248,31 +201,32 @@ struct trace_pruner {
    }
 };
 
+void pack_unprunable(fc::cfile& file, const chainbase::database& db, bool trace_debug_mode, uint32_t version,
+                     const std::vector<augmented_transaction_trace>& traces) {
+   zlib_pack(file, make_history_context_wrapper(
+                       db, trace_receipt_context{.debug_mode = trace_debug_mode, .version = version}, traces));
+}
+
 } // namespace
 
-bytes trace_converter::pack(const chainbase::database& db, bool trace_debug_mode, const block_state_ptr& block_state,
-                            uint32_t version) {
+void trace_converter::pack(fc::cfile& file, const chainbase::database& db, bool trace_debug_mode,
+                           const block_state_ptr& block_state, uint32_t version) {
 
-   auto       traces     = prepare_traces(*this, block_state);
-   const auto unprunable = zlib_compress_bytes(fc::raw::pack(make_history_context_wrapper(
-       db, trace_receipt_context{.debug_mode = trace_debug_mode, .version = version}, traces)));
+   auto traces = prepare_traces(*this, block_state);
 
    if (version == 0) {
-      return unprunable;
+      pack_unprunable(file, db, trace_debug_mode, version, traces);
    } else {
-      // In version 1 of ShiP traces log disk format, it log entry consists of 3 parts.
-      //  1. an zlib compressed unprunable section contains the serialization of the vector of traces excluding
+      // In version 1 of SHiP traces log disk format, it log entry consists of 3 parts.
+      //  1. an uint32_t length for the total byte count of part 2 and 3.
+      //  2. a zlib compressed unprunable section contains the serialization of the vector of traces excluding
       //     the prunable_data data (i.e. signatures and context free data)
-      //  2. a prunable section contains the serialization of the vector of prunable_data, where all the contained
+      //  3. a prunable section contains the serialization of the vector of prunable_data, where all the contained
       //     context_free_segments are zlib compressed.
-      bytes buffer;
-      state_history::pack(buffer, unprunable);
-
-      for_each_packed_transaction(traces, [&buffer](const chain::packed_transaction& pt) {
-         state_history::pack(buffer, pt.get_prunable_data());
-      });
-
-      return buffer;
+      length_writer<fc::cfile> len_writer(file);
+      pack_unprunable(file, db, trace_debug_mode, version, traces);
+      for_each_packed_transaction(
+          traces, [&file](const chain::packed_transaction& pt) { state_history::pack(file, pt.get_prunable_data()); });
    }
 }
 
@@ -282,7 +236,8 @@ bytes trace_converter::to_traces_bin_v0(const bytes& entry_payload, uint32_t ver
    else {
       fc::datastream<const char*> strm(entry_payload.data(), entry_payload.size());
 
-      auto traces = unpack_zlib_compressed<std::vector<transaction_trace>>(entry_payload.data(), strm);
+      std::vector<transaction_trace> traces;
+      zlib_unpack(entry_payload.data(), strm, traces);
       for (auto& trace : traces) {
          visit_deserialized_trace(entry_payload.data(), strm, trace,
                                   [](transaction_trace_v0& trace, prunable_data_type& prunable_data) {
@@ -299,7 +254,8 @@ std::pair<uint64_t, uint64_t> trace_converter::prune_traces(bytes& entry_payload
                                                             std::vector<transaction_id_type>& ids) {
    EOS_ASSERT(version > 0, state_history_exception, "state history log version 0 does not support trace pruning");
    fc::datastream<const char*> read_strm(entry_payload.data(), entry_payload.size());
-   auto traces = unpack_zlib_compressed<std::vector<transaction_trace>>(entry_payload.data(), read_strm);
+   std::vector<transaction_trace> traces;
+   zlib_unpack(entry_payload.data(), read_strm, traces);
 
    auto prune_trace = trace_pruner(entry_payload, read_strm, ids);
    for (auto& trace : traces) {

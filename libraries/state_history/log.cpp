@@ -27,11 +27,7 @@ void state_history_log::read_header(state_history_log_header& header, bool asser
 }
 
 void state_history_log::write_header(const state_history_log_header& header) {
-   char                  bytes[state_history_log_header_serial_size];
-   fc::datastream<char*> ds(bytes, sizeof(bytes));
-   fc::raw::pack(ds, header);
-   EOS_ASSERT(!ds.remaining(), chain::state_history_exception, "state_history_log_header_serial_size mismatch");
-   log.write(bytes, sizeof(bytes));
+   fc::raw::pack(log, header);
 }
 
 // returns cfile positioned at payload
@@ -111,6 +107,8 @@ void state_history_log::recover_blocks(uint64_t size) {
 void state_history_log::open_log() {
    log.set_file_path(log_filename);
    log.open("a+b"); // std::ios_base::binary | std::ios_base::in | std::ios_base::out | std::ios_base::app
+   log.close();
+   log.open("rb+");
    log.seek_end(0);
    uint64_t size = log.tellp();
    if (size >= state_history_log_header_serial_size) {
@@ -203,7 +201,7 @@ void state_history_log::truncate(state_history_log::block_num_type block_num) {
    ilog("fork or replay: removed ${n} blocks from ${name}.log", ("n", num_removed)("name", name));
 }
 
-std::pair<state_history_log::file_position_type, state_history_log::block_num_type>
+state_history_log::block_num_type
 state_history_log::write_entry_header(const state_history_log_header& header, const chain::block_id_type& prev_id) {
    auto block_num = chain::block_header::num_from_id(header.block_id);
    EOS_ASSERT(_begin_block == _end_block || block_num <= _end_block, chain::state_history_exception,
@@ -224,18 +222,20 @@ state_history_log::write_entry_header(const state_history_log_header& header, co
    if (block_num < _end_block)
       truncate(block_num);
    log.seek_end(0);
-   uint64_t pos = log.tellp();
    write_header(header);
-   return std::make_pair(pos, block_num);
+   return block_num;
 }
 
 void state_history_log::write_entry_position(const state_history_log_header&       header,
                                              state_history_log::file_position_type pos,
                                              state_history_log::block_num_type     block_num) {
    uint64_t end = log.tellp();
-   EOS_ASSERT(end == pos + state_history_log_header_serial_size + header.payload_size, chain::state_history_exception,
-              "wrote payload with incorrect size to ${name}.log", ("name", name));
+   uint64_t payload_start_pos = pos + state_history_log_header_serial_size;
+   uint64_t payload_size      = end - payload_start_pos;
    log.write((char*)&pos, sizeof(pos));
+   log.seek(payload_start_pos - sizeof(header.payload_size));
+   log.write((char*)&payload_size, sizeof(header.payload_size));
+   log.seek_end(0);
 
    index.seek_end(0);
    index.write((char*)&pos, sizeof(pos));
@@ -294,16 +294,10 @@ void state_history_traces_log::prune_transactions(state_history_log::block_num_t
 
 void state_history_traces_log::store(const chainbase::database& db, const chain::block_state_ptr& block_state) {
 
-   auto traces_bin = trace_convert.pack(db, trace_debug_mode, block_state, ship_current_version);
-
    state_history_log_header header{.magic        = ship_magic(ship_current_version),
-                                   .block_id     = block_state->id,
-                                   .payload_size = sizeof(uint32_t) + traces_bin.size()};
+                                   .block_id     = block_state->id};
    this->write_entry(header, block_state->block->previous, [&](auto& stream) {
-      uint32_t s = (uint32_t)traces_bin.size();
-      stream.write((char*)&s, sizeof(s));
-      if (!traces_bin.empty())
-         stream.write(traces_bin.data(), traces_bin.size());
+      trace_convert.pack(stream, db, trace_debug_mode, block_state, ship_current_version);
    });
 }
 
@@ -326,20 +320,12 @@ void state_history_chain_state_log::store(const chainbase::database& db, const c
       ilog("Placing initial state in block ${n}", ("n", block_state->block->block_num()));
 
    using namespace state_history;
-
    std::vector<table_delta> deltas     = create_deltas(db, fresh);
-   auto                     deltas_bin = zlib_compress_bytes(fc::raw::pack(deltas));
-   EOS_ASSERT(deltas_bin.size() == (uint32_t)deltas_bin.size(), chain::state_history_exception, "deltas is too big");
-
    state_history_log_header header{.magic        = ship_magic(ship_current_version),
-                                   .block_id     = block_state->id,
-                                   .payload_size = sizeof(uint32_t) + deltas_bin.size()};
+                                   .block_id     = block_state->id};
 
-   this->write_entry(header, block_state->block->previous, [&](auto& stream) {
-      uint32_t s = (uint32_t)deltas_bin.size();
-      stream.write((char*)&s, sizeof(s));
-      if (!deltas_bin.empty())
-         stream.write(deltas_bin.data(), deltas_bin.size());
+   this->write_entry(header, block_state->block->previous, [&deltas](auto& stream) {
+      zlib_pack(stream, deltas);
    });
 }
 

@@ -33,6 +33,25 @@ state_history::partial_transaction_v0 get_partial_from_traces_bin(const bytes&  
    return trace_v0.partial->get<state_history::partial_transaction_v0>();
 }
 
+std::vector<char> pack(state_history::trace_converter& converter, const chainbase::database& db, bool trace_debug_mode, const block_state_ptr& block_state,
+                            uint32_t version) 
+{
+
+   scoped_temp_path temp_path;
+   cfile            file;
+   file.set_file_path(temp_path.path);
+   file.open("wb");
+   converter.pack(file, db, trace_debug_mode, block_state, version);
+   file.flush();
+   file.close();
+   file.open("rb");
+   uint32_t sz = 0;
+   file.read(reinterpret_cast<char*>(&sz), sizeof(sz));
+   std::vector<char> result(sz);
+   file.read(result.data(), result.size());
+   return result;
+}
+
 BOOST_AUTO_TEST_SUITE(test_state_history)
 
 BOOST_AUTO_TEST_CASE(test_trace_converter_test) {
@@ -50,8 +69,8 @@ BOOST_AUTO_TEST_CASE(test_trace_converter_test) {
        });
 
    chain.control->accepted_block.connect([&](const block_state_ptr& bs) {
-      on_disk_log_entries_v0[bs->block_num] = converter_v0.pack(chain.control->db(), true, bs, 0);
-      on_disk_log_entries_v1[bs->block_num] = converter_v1.pack(chain.control->db(), true, bs, 1);
+      on_disk_log_entries_v0[bs->block_num] = pack(converter_v0, chain.control->db(), true, bs, 0);
+      on_disk_log_entries_v1[bs->block_num] = pack(converter_v1, chain.control->db(), true, bs, 1);
    });
 
    deploy_test_api(chain);

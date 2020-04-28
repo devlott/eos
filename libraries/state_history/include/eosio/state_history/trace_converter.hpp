@@ -2,6 +2,7 @@
 
 #include <eosio/chain/block_state.hpp>
 #include <eosio/state_history/types.hpp>
+#include <fc/io/cfile.hpp>
 
 namespace eosio {
 namespace state_history {
@@ -17,8 +18,8 @@ struct trace_converter {
    
    void  add_transaction(const transaction_trace_ptr& trace, const packed_transaction_ptr& transaction);
 
-   bytes pack(const chainbase::database& db, bool trace_debug_mode, const block_state_ptr& block_state,
-              uint32_t version);
+   void pack(fc::cfile& file, const chainbase::database& db, bool trace_debug_mode, const block_state_ptr& block_state,
+             uint32_t version);
    static bytes to_traces_bin_v0(const bytes& entry_payload, uint32_t version); 
 
    /**
