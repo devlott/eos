@@ -44,7 +44,6 @@ history_context_wrapper<std::decay_t<P>, std::decay_t<T>> make_history_context_w
 struct trace_receipt_context {
    uint8_t  failed_status = eosio::chain::transaction_receipt_header::hard_fail;
    bool     debug_mode    = false;
-   uint32_t version       = 0;
 };
 
 namespace fc {
@@ -662,12 +661,9 @@ ST& operator<<(
       fc::raw::pack(ds, as_type<uint8_t>(trx.max_cpu_usage_ms));
       fc::raw::pack(ds, as_type<fc::unsigned_int>(trx.delay_sec));
       fc::raw::pack(ds, as_type<eosio::chain::extensions_type>(trx.transaction_extensions));
-
-      const auto* sigs = obj.context.version == 0 ? pt.get_signatures() : nullptr;
-      const auto* cfd  = obj.context.version == 0 ? pt.get_context_free_data() : nullptr;
       fc::raw::pack(ds, as_type<std::vector<eosio::chain::signature_type>>(
-                            sigs ? *sigs : std::vector<eosio::chain::signature_type>{}));
-      fc::raw::pack(ds, as_type<std::vector<eosio::chain::bytes>>(cfd ? *cfd : std::vector<eosio::chain::bytes>{}));
+                             std::vector<eosio::chain::signature_type>{}));
+      fc::raw::pack(ds, as_type<std::vector<eosio::chain::bytes>>( std::vector<eosio::chain::bytes>{}));
    }
 
    return ds;

@@ -1,108 +1,16 @@
 #pragma once
-
-#include <boost/iostreams/device/back_inserter.hpp>
 #include <boost/iostreams/filter/zlib.hpp>
 #include <boost/iostreams/filtering_streambuf.hpp>
 #include <boost/iostreams/restrict.hpp>
-#include <eosio/chain/exceptions.hpp>
-#include <eosio/chain/types.hpp>
-#include <fc/io/cfile.hpp>
 #include <fc/io/raw.hpp>
+#include <eosio/state_history/binary_stream.hpp>
+#include <eosio/state_history/bio_device_adaptor.hpp>
 
-namespace bio = boost::iostreams;
-
-namespace fc {
-/// adapt fc::datastream or fc::cfile to boost iostreams Sink Concept
-template <typename STREAM>
-struct data_sink {
-   typedef char          char_type;
-   typedef bio::sink_tag category;
-
-   STREAM& ds;
-   size_t  write(const char* buf, size_t n) {
-      ds.write(buf, n);
-      return n;
-   }
-};
-
-/// adapt boost iostreams filtering_ostreambuf to fc::datastream::write interface
-class zlib_compress_ostream {
-   bio::filtering_ostreambuf strm;
-
- public:
-   template <typename STREAM>
-   zlib_compress_ostream(STREAM& ds)
-       : strm(bio::zlib_compressor() | data_sink<STREAM>{ds}) {}
-
-   bool write(const char* buf, size_t n) { return strm.sputn(buf, n) == n; }
-};
-
-class cfile_data_source {
- private:
-   cfile& file;
-
- public:
-   typedef char            char_type;
-   typedef bio::source_tag category;
-
-   cfile_data_source(cfile& f)
-       : file(f) {}
-
-   size_t read(char* buf, size_t len) {
-      file.read(buf, len);
-      return len;
-   }
-};
-
-class zlib_decompress_istream {
-   bio::filtering_ostreambuf strm;
-
- public:
-   template <typename SOURCE>
-   zlib_decompress_istream(SOURCE& src)
-       : strm(bio::zlib_decompressor() | src) {}
-
-   size_t read(char* buf, size_t len) { return strm.sgetn(buf, len); }
-};
-
-template <typename STREAM>
-class restriced_data_source {
-   STREAM& strm;
-   size_t  remaining;
-
- public:
-   typedef char            char_type;
-   typedef bio::source_tag category;
-
-   restriced_data_source(STREAM& st, size_t sz)
-       : strm(st)
-       , remaining(sz) {}
-   size_t read(char* buf, size_t n) {
-      EOS_ASSERT(n <= remaining, fc::out_of_range_exception, "read datastream over by ${v}",
-              ("v", remaining - n));
-      remaining -= n;
-      return strm.read(buf, n);
-   }
-};
-
-template <typename STREAM>
-restriced_data_source<STREAM> make_restricted_source(STREAM& strm, size_t len) {
-   return restriced_data_source<STREAM>(strm, len);
-}
-
-} // namespace fc
 
 namespace eosio {
 namespace state_history {
 
-using chain::bytes;
-
-bytes zlib_compress_bytes(const bytes& in);
-bytes zlib_decompress(const bytes& in);
-
-inline void seek(fc::cfile& file, uint64_t position) { file.seek(position); }
-inline void seek(fc::datastream<char*>& ds, uint64_t position) { ds.seekp(position); }
-
+namespace bio = boost::iostreams;
 template <typename STREAM>
 struct length_writer {
    STREAM&  strm;
@@ -116,11 +24,11 @@ struct length_writer {
    }
 
    ~length_writer() {
-      uint64_t end_pos = strm.tellp();
+      uint32_t end_pos = strm.tellp();
       uint32_t len     = end_pos - start_pos;
-      seek(strm, start_pos - sizeof(len));
+      strm.seekp(start_pos - sizeof(len));
       strm.write((char*)&len, sizeof(len));
-      seek(strm, end_pos);
+      strm.seekp(end_pos);
    }
 };
 
@@ -134,13 +42,14 @@ bool is_empty(const std::vector<T>& obj) {
 }
 
 template <typename STREAM, typename T>
-void zlib_pack(STREAM& strm, const T& object) {
-   if (is_empty(object)) {
+void zlib_pack(STREAM& strm, const T& obj) {
+   if (is_empty(obj)) {
       fc::raw::pack(strm, uint32_t(0));
-   } else {
+   }
+   else {
       length_writer<STREAM>     len_writer(strm);
-      fc::zlib_compress_ostream compressed_strm(strm);
-      fc::raw::pack(compressed_strm, object);
+      fc::binary_stream<bio::filtering_ostreambuf> compressed_strm(bio::zlib_compressor() | fc::to_sink(strm));
+      fc::raw::pack(compressed_strm, obj);
    }
 }
 
@@ -149,30 +58,9 @@ void zlib_unpack(STREAM& strm, T& obj) {
    uint32_t len;
    fc::raw::unpack(strm, len);
    if (len > 0) {
-      fc::zlib_decompress_istream<STREAM> decompress_strm(make_restricted_source(strm, len));
+      fc::binary_stream<bio::filtering_istreambuf> decompress_strm(bio::zlib_decompressor() | bio::restrict(fc::to_source(strm), 0, len));
       fc::raw::unpack(decompress_strm, obj);
    }
-}
-
-template <typename Object>
-void zlib_unpack(const char* buffer, fc::datastream<const char*>& ds, Object& obj) {
-   uint32_t len;
-   fc::raw::unpack(ds, len);
-
-   if (len == 0)
-      return;
-
-   EOS_ASSERT(ds.remaining() >= len, fc::out_of_range_exception, "read datastream over by ${v}",
-              ("v", ds.remaining() - len));
-
-   bytes                     decompressed;
-   bio::filtering_ostreambuf strm(bio::zlib_decompressor() | bio::back_inserter(decompressed));
-   bio::write(strm, buffer + ds.tellp(), len);
-   bio::close(strm);
-   ds.skip(len);
-
-   fc::datastream<const char*> decompressed_ds(decompressed.data(), decompressed.size());
-   fc::raw::unpack(decompressed_ds, obj);
 }
 
 } // namespace state_history

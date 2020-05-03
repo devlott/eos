@@ -12,6 +12,11 @@ using chain::signature_type;
 using chain::signed_transaction;
 using chain::transaction_trace_ptr;
 
+enum class compression_type : unsigned char {
+   zlib,
+   none
+};
+
 template <typename T>
 struct big_vector_wrapper {
    T obj;

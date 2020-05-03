@@ -31,13 +31,12 @@ void state_history_log::write_header(const state_history_log_header& header) {
 }
 
 // returns cfile positioned at payload
-fc::cfile& state_history_log::get_entry_header(state_history_log::block_num_type block_num,
-                                               state_history_log_header&         header) {
+void state_history_log::get_entry_header(state_history_log::block_num_type block_num,
+                                         state_history_log_header&         header) {
    EOS_ASSERT(block_num >= _begin_block && block_num < _end_block, chain::state_history_exception,
               "read non-existing block in ${name}.log", ("name", name));
    log.seek(get_pos(block_num));
    read_header(header);
-   return log;
 }
 
 chain::block_id_type state_history_log::get_block_id(state_history_log::block_num_type block_num) {
@@ -243,20 +242,9 @@ void state_history_log::write_entry_position(const state_history_log_header&    
       _begin_block = block_num;
    _end_block    = block_num + 1;
    last_block_id = header.block_id;
-}
 
-fc::optional<std::pair<chain::bytes, state_history_log::version_type>>
-state_history_log::get_entry(state_history_log::block_num_type block_num) {
-   if (block_num < begin_block() || block_num >= end_block())
-      return {};
-   state_history_log_header header;
-   auto&                    stream = get_entry_header(block_num, header);
-   uint32_t                 s;
-   stream.read((char*)&s, sizeof(s));
-   chain::bytes data(s);
-   if (s)
-      stream.read(data.data(), s);
-   return std::make_pair(std::move(data), get_ship_version(header.magic));
+   log.flush();
+   index.flush();
 }
 
 state_history_traces_log::state_history_traces_log(fc::path state_history_dir)
@@ -264,40 +252,43 @@ state_history_traces_log::state_history_traces_log(fc::path state_history_dir)
                         (state_history_dir / "trace_history.index").string()) {}
 
 fc::optional<chain::bytes> state_history_traces_log::get_log_entry(block_num_type block_num) {
-   return this->get_entry(block_num, [](const chain::bytes& data, uint32_t version) {
-      return state_history::trace_converter::to_traces_bin_v0(data, version);
-   });
+   if (block_num < begin_block() || block_num >= end_block())
+      return {};
+   state_history_log_header header;
+   get_entry_header(block_num, header);
+   std::vector<state_history::transaction_trace> traces;
+   state_history::trace_converter::unpack(log, traces);
+   return fc::raw::pack(traces);
+}
+
+std::vector<state_history::transaction_trace> state_history_traces_log::get_traces(block_num_type block_num) {
+   if (block_num < begin_block() || block_num >= end_block())
+      return {};
+   state_history_log_header header;
+   get_entry_header(block_num, header);
+   std::vector<state_history::transaction_trace> traces;
+   state_history::trace_converter::unpack(log, traces);
+   return traces;
 }
 
 void state_history_traces_log::prune_transactions(state_history_log::block_num_type        block_num,
                                                   std::vector<chain::transaction_id_type>& ids) {
-   auto entry_result = get_entry(block_num);
-   EOS_ASSERT(entry_result, chain::state_history_exception, "nonexistant block num ${block_num}",
-              ("block_num", block_num));
-
-   auto pos = get_log().tellp();
-
-   auto& [entry_payload, version]  = *entry_result;
-   auto [start_offset, end_offset] = state_history::trace_converter::prune_traces(entry_payload, version, ids);
-
-   if (end_offset > 0) {
-      // the log object is in append mode, which cannot be used to update written content,
-      // we need to open the file in the update mode
-
-      fc::cfile update_log;
-      update_log.set_file_path(get_log().get_file_path());
-      update_log.open(fc::cfile::update_rw_mode);
-      update_log.seek(pos - entry_payload.size() + start_offset);
-      update_log.write(entry_payload.data() + start_offset, end_offset-start_offset);
-   }
+   if (block_num < begin_block() || block_num >= end_block())
+      return;
+   state_history_log_header header;
+   get_entry_header(block_num, header);
+   state_history::trace_converter::prune_traces(log, header.payload_size, ids);
+   log.flush();
 }
 
 void state_history_traces_log::store(const chainbase::database& db, const chain::block_state_ptr& block_state) {
 
    state_history_log_header header{.magic        = ship_magic(ship_current_version),
                                    .block_id     = block_state->id};
+   auto                     trace = cache.prepare_traces(block_state);
+
    this->write_entry(header, block_state->block->previous, [&](auto& stream) {
-      trace_convert.pack(stream, db, trace_debug_mode, block_state, ship_current_version);
+      state_history::trace_converter::pack(stream, db, trace_debug_mode, trace, compression);
    });
 }
 
@@ -310,8 +301,14 @@ state_history_chain_state_log::state_history_chain_state_log(fc::path state_hist
                         (state_history_dir / "chain_state_history.index").string()) {}
 
 fc::optional<chain::bytes> state_history_chain_state_log::get_log_entry(block_num_type block_num) {
-   return this->get_entry(block_num,
-                          [](const chain::bytes& data, uint32_t) { return state_history::zlib_decompress(data); });
+   if (block_num < begin_block() || block_num >= end_block())
+      return {};
+   state_history_log_header header;
+   get_entry_header(block_num, header);
+   chain::bytes data;
+   state_history::zlib_unpack(log, data);
+   return data;
+
 }
 
 void state_history_chain_state_log::store(const chainbase::database& db, const chain::block_state_ptr& block_state) {
