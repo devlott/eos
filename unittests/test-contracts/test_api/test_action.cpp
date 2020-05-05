@@ -1,12 +1,31 @@
-#include <eosiolib/action.hpp>
-#include <eosiolib/chain.h>
-#include <eosiolib/crypto.h>
-#include <eosiolib/datastream.hpp>
-#include <eosiolib/db.h>
-#include <eosiolib/eosio.hpp>
-#include <eosiolib/print.hpp>
-#include <eosiolib/privileged.h>
-#include <eosiolib/transaction.hpp>
+#include <eosio/chain/webassembly/interface.hpp>
+
+//#include <eosiolib/action.hpp>
+#include <eosiolib/contracts/eosio/action.hpp>
+
+//#include <eosiolib/chain.h>
+#include <eosiolib/capi/eosio/chain.h>
+
+//#include <eosiolib/crypto.h>
+#include <eosiolib/capi/eosio/crypto.h>
+
+//#include <eosiolib/datastream.hpp>
+#include <eosiolib/core/eosio/datastream.hpp>
+
+//#include <eosiolib/db.h>
+#include <eosiolib/capi/eosio/db.h>
+
+//#include <eosiolib/eosio.hpp>
+#include <eosiolib/contracts/eosio/eosio.hpp>
+
+//#include <eosiolib/print.hpp>
+#include <eosiolib/core/eosio/print.hpp>
+
+//#include <eosiolib/privileged.h>
+#include <eosiolib/capi/eosio/privileged.h>
+
+//#include <eosiolib/transaction.hpp>
+#include <eosiolib/contracts/eosio/transaction.hpp>
 
 #include "test_api.hpp"
 

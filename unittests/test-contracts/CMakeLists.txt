@@ -1,6 +1,10 @@
 if( EOSIO_COMPILE_TEST_CONTRACTS )
    set(EOSIO_WASM_OLD_BEHAVIOR "Off")
    find_package( eosio.cdt REQUIRED )
+
+   include(${EOSIO_CDT_ROOT}/lib/cmake/eosio.cdt/EosioWasmToolchain.cmake)
+else()
+   message( STATUS "Not building contracts in directory `eos/unittests/test-contracts/`" )
 endif()
 
 if ("${CMAKE_GENERATOR}" STREQUAL "Ninja")

@@ -1,7 +1,7 @@
 #pragma once
 
-#include <eosiolib/serialize.hpp>
-
+//#include <eosiolib/serialize.hpp>
+#include <eosiolib/core/eosio/serialize.hpp>
 
 static constexpr unsigned int DJBH( const char* cp )
 {

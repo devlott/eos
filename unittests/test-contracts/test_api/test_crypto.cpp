@@ -1,6 +1,11 @@
-#include <eosiolib/crypto.h>
-#include <eosiolib/eosio.hpp>
-#include <eosiolib/print.hpp>
+//#include <eosiolib/crypto.h>
+#include <eosiolib/core/eosio/crypto.h>
+
+//#include <eosiolib/eosio.hpp>
+#include <eosiolib/contracts/eosio/eosio.hpp>
+
+//#include <eosiolib/print.hpp>
+#include <eosiolib/core/eosio/print.hpp>
 
 #include "test_api.hpp"
 

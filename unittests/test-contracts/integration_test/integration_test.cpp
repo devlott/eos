@@ -6,7 +6,7 @@ void integration_test::store( name from, name to, uint64_t num ) {
    require_auth( from );
 
    check( is_account( to ), "to account does not exist" );
-   check( num < std::numeric_limits<size_t>::max(), "num to large" );
+   check( num < std::numeric_limits<size_t>::max(), "num too large" );
 
    payloads_table data( get_self(), from.value );
    uint64_t key = 0;

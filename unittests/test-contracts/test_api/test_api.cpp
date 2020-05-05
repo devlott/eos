@@ -1,5 +1,8 @@
-#include <eosiolib/eosio.hpp>
-#include <eosiolib/transaction.hpp>
+//#include <eosiolib/eosio.hpp>
+#include <eosiolib/contracts/eosio/eosio.hpp>
+
+//#include <eosiolib/transaction.hpp>
+#include <eosiolib/contracts/eosio/transaction.hpp>
 
 #include "test_api.hpp"
 
@@ -42,7 +45,7 @@ extern "C" {
          require_auth(code);
 
       //test_types
-      WASM_TEST_HANDLER( test_types, types_size     );
+      WASM_TEST_HANDLER( test_tcd ..ypes, types_size     );
       WASM_TEST_HANDLER( test_types, char_to_symbol );
       WASM_TEST_HANDLER( test_types, string_to_name );
 

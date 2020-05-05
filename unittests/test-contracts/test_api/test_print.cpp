@@ -1,4 +1,9 @@
-#include <eosiolib/eosio.hpp>
+//#include <eosiolib/print.hpp>
+#include <eosiolib/core/eosio/print.hpp>
+
+
+//#include <eosiolib/eosio.hpp>
+#include <eosiolib/contracts/eosio/eosio.hpp>
 
 #include "test_api.hpp"
 
